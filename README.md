@@ -28,7 +28,7 @@ Airwave is a real-time, browser-to-browser audio sharing application. Built with
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/YOUR_USERNAME/audio-sync-app.git
+   git clone https://github.com/Bino369/Airwave.git
    cd audio-sync-app
    ```
 
