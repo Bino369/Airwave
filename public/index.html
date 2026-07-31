@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Airwave — share audio, live</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<div class="freq-strip" id="freqStrip" aria-hidden="true">
+  <!-- bars injected by JS -->
+</div>
+
+<main class="stage">
+
+  <!-- LANDING -->
+  <section class="view" id="view-landing">
+    <div class="brand">
+      <span class="brand-mark">))) </span>
+      <h1>Airwave</h1>
+    </div>
+    <p class="tagline">Play something on your machine. It plays on theirs. Same moment, no upload, no file.</p>
+
+    <div class="choice-row">
+      <button class="choice-card" id="btnHost">
+        <span class="choice-eyebrow">Sender</span>
+        <span class="choice-title">Start sharing</span>
+        <span class="choice-desc">Broadcast whatever's playing in a tab or on your system.</span>
+      </button>
+      <button class="choice-card" id="btnGuest">
+        <span class="choice-eyebrow">Listener</span>
+        <span class="choice-title">Join a room</span>
+        <span class="choice-desc">Enter a code you were given and hear it live.</span>
+      </button>
+    </div>
+  </section>
+
+  <!-- HOST: picking source -->
+  <section class="view hidden" id="view-host-setup">
+    <button class="back-link" data-back>&larr; back</button>
+    <h2>Start sharing</h2>
+    <p class="muted">You'll be asked to pick a tab, window, or your whole screen — make sure to tick <strong>"share audio"</strong> in that dialog.</p>
+    <button class="primary-btn" id="btnCaptureAudio">Choose what to share</button>
+    <p class="error" id="hostError"></p>
+  </section>
+
+  <!-- HOST: room live -->
+  <section class="view hidden" id="view-host-room">
+    <span class="status-pill" id="hostStatus">Waiting for listener</span>
+    <p class="muted">Share this code</p>
+    <div class="room-code" id="roomCodeDisplay">-----</div>
+    <button class="secondary-btn" id="btnCopyLink">Copy invite link</button>
+    <p class="muted small">Keep this tab open — closing it ends the broadcast.</p>
+  </section>
+
+  <!-- GUEST: entering code -->
+  <section class="view hidden" id="view-guest-setup">
+    <button class="back-link" data-back>&larr; back</button>
+    <h2>Join a room</h2>
+    <input class="code-input" id="codeInput" maxlength="5" placeholder="CODE" autocomplete="off" autocapitalize="characters" />
+    <button class="primary-btn" id="btnJoin">Join</button>
+    <p class="error" id="guestError"></p>
+  </section>
+
+  <!-- GUEST: connected -->
+  <section class="view hidden" id="view-guest-room">
+    <span class="status-pill" id="guestStatus">Connecting</span>
+    <p class="muted">Room <strong id="guestRoomLabel"></strong></p>
+    <audio id="remoteAudio" autoplay></audio>
+    <p class="muted small" id="guestHint">Audio will start automatically once the sender is streaming.</p>
+  </section>
+
+</main>
+
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<script src="client.js"></script>
+</body>
+</html>
