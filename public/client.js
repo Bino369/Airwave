@@ -12,21 +12,19 @@ const ICE_SERVERS = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 let pc = null;
 let role = null; // 'host' | 'guest'
 let roomCode = null;
+let qrCodeObj = null;
 
-// ---------- ambient frequency strip ----------
-const freqStrip = document.getElementById('freqStrip');
-for (let i = 0; i < 48; i++) {
-  const bar = document.createElement('div');
-  bar.className = 'freq-bar';
-  bar.style.animationDelay = `${(Math.random() * 1.6).toFixed(2)}s`;
-  bar.style.animationDuration = `${(1.2 + Math.random() * 1.2).toFixed(2)}s`;
-  freqStrip.appendChild(bar);
-}
-function setLive(isLive) {
-  freqStrip.classList.toggle('live', isLive);
-}
+// Web Audio API Visualizer state
+let audioCtx = null;
+let analyserNode = null;
+let visualizerAnimFrame = null;
 
-// ---------- view switching ----------
+// Real-Time Stats loop
+let statsInterval = null;
+let lastBytesReceived = 0;
+let lastTimestamp = 0;
+
+// ---------- views switching ----------
 const views = {
   landing: document.getElementById('view-landing'),
   hostSetup: document.getElementById('view-host-setup'),
@@ -34,10 +32,12 @@ const views = {
   guestSetup: document.getElementById('view-guest-setup'),
   guestRoom: document.getElementById('view-guest-room'),
 };
+
 function show(name) {
   Object.values(views).forEach(v => v.classList.add('hidden'));
   views[name].classList.remove('hidden');
 }
+
 document.querySelectorAll('[data-back]').forEach(btn => {
   btn.addEventListener('click', () => {
     teardown();
@@ -47,7 +47,149 @@ document.querySelectorAll('[data-back]').forEach(btn => {
 
 function teardown() {
   if (pc) { pc.close(); pc = null; }
-  setLive(false);
+  stopVisualizer();
+  stopStatsLoop();
+  document.getElementById('hostStats').classList.add('hidden');
+  document.getElementById('guestStats').classList.add('hidden');
+}
+
+// ---------- Real Audio Visualizer (Canvas) ----------
+const canvas = document.getElementById('visualizerCanvas');
+const canvasCtx = canvas ? canvas.getContext('2d') : null;
+
+function resizeCanvas() {
+  if (!canvas) return;
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+function initAudioVisualizer(stream) {
+  try {
+    stopVisualizer();
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const source = audioCtx.createMediaStreamSource(stream);
+    analyserNode = audioCtx.createAnalyser();
+    analyserNode.fftSize = 128;
+    source.connect(analyserNode);
+
+    document.querySelector('.visualizer-container').classList.add('active');
+    drawVisualizer();
+  } catch (err) {
+    console.warn('AudioContext visualizer initialization failed:', err);
+  }
+}
+
+function drawVisualizer() {
+  if (!analyserNode || !canvasCtx) return;
+  visualizerAnimFrame = requestAnimationFrame(drawVisualizer);
+
+  const bufferLength = analyserNode.frequencyBinCount;
+  const dataArray = new Uint8Array(bufferLength);
+  analyserNode.getByteFrequencyData(dataArray);
+
+  canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
+
+  const barWidth = (canvas.width / bufferLength) * 2;
+  let x = 0;
+
+  for (let i = 0; i < bufferLength; i++) {
+    const barHeight = (dataArray[i] / 255) * (canvas.height * 0.4);
+    
+    // Dynamic Gradient based on intensity
+    const gradient = canvasCtx.createLinearGradient(0, canvas.height, 0, canvas.height - barHeight);
+    gradient.addColorStop(0, 'rgba(255, 93, 58, 0.2)');
+    gradient.addColorStop(0.5, 'rgba(255, 93, 58, 0.7)');
+    gradient.addColorStop(1, 'rgba(51, 214, 166, 1)');
+
+    canvasCtx.fillStyle = gradient;
+    canvasCtx.fillRect(x, canvas.height - barHeight, barWidth - 2, barHeight);
+
+    x += barWidth;
+  }
+}
+
+function stopVisualizer() {
+  if (visualizerAnimFrame) cancelAnimationFrame(visualizerAnimFrame);
+  if (audioCtx) { audioCtx.close(); audioCtx = null; }
+  analyserNode = null;
+  if (canvasCtx) canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
+  document.querySelector('.visualizer-container').classList.remove('active');
+}
+
+// ---------- Floating Emoji Reactions ----------
+function spawnEmoji(emoji) {
+  const container = document.getElementById('emojiOverlay');
+  if (!container) return;
+  const el = document.createElement('div');
+  el.className = 'floating-emoji';
+  el.textContent = emoji;
+  el.style.left = `${Math.random() * 80 + 10}vw`;
+  container.appendChild(el);
+  setTimeout(() => el.remove(), 2600);
+}
+
+document.querySelectorAll('.emoji-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const emoji = btn.getAttribute('data-emoji');
+    spawnEmoji(emoji);
+    if (roomCode) {
+      socket.emit('reaction', { emoji });
+    }
+  });
+});
+
+socket.on('reaction', (data) => {
+  if (data && data.emoji) {
+    spawnEmoji(data.emoji);
+  }
+});
+
+// ---------- Real-Time WebRTC Stats Loop ----------
+function startStatsLoop() {
+  stopStatsLoop();
+  lastBytesReceived = 0;
+  lastTimestamp = 0;
+
+  statsInterval = setInterval(async () => {
+    if (!pc) return;
+    try {
+      const stats = await pc.getStats();
+      let rtt = null;
+      let bitrate = null;
+
+      stats.forEach(report => {
+        if (report.type === 'candidate-pair' && report.currentRoundTripTime !== undefined) {
+          rtt = Math.round(report.currentRoundTripTime * 1000);
+        }
+        if (report.type === 'inbound-rtp' && report.kind === 'audio') {
+          if (lastBytesReceived && lastTimestamp) {
+            const bytes = report.bytesReceived - lastBytesReceived;
+            const time = (report.timestamp - lastTimestamp) / 1000;
+            bitrate = Math.round((bytes * 8) / time / 1000);
+          }
+          lastBytesReceived = report.bytesReceived;
+          lastTimestamp = report.timestamp;
+        }
+      });
+
+      const text = `⚡ ${rtt !== null ? rtt + ' ms' : 'Live'}${bitrate !== null ? ' • ' + bitrate + ' kbps' : ''}`;
+      
+      const badgeId = role === 'host' ? 'hostStats' : 'guestStats';
+      const badge = document.getElementById(badgeId);
+      if (badge) {
+        badge.textContent = text;
+        badge.classList.remove('hidden');
+      }
+    } catch (e) {
+      console.warn('Failed to fetch RTC stats:', e);
+    }
+  }, 2000);
+}
+
+function stopStatsLoop() {
+  if (statsInterval) { clearInterval(statsInterval); statsInterval = null; }
 }
 
 // ---------- shared peer connection setup ----------
@@ -60,160 +202,247 @@ function createPeerConnection() {
   };
   conn.onconnectionstatechange = () => {
     const connected = conn.connectionState === 'connected';
-    setLive(connected);
     if (role === 'host') {
       const pill = document.getElementById('hostStatus');
       pill.textContent = connected ? 'Live' : 'Waiting for listener';
       pill.classList.toggle('live', connected);
     } else if (role === 'guest') {
       const pill = document.getElementById('guestStatus');
-      pill.textContent = connected ? 'Live' : 'Connecting';
+      pill.textContent = connected ? 'Streaming live' : 'Connecting';
       pill.classList.toggle('live', connected);
+    }
+    if (connected) {
+      startStatsLoop();
     }
   };
   return conn;
 }
 
-// =========================================================
-// HOST FLOW
-// =========================================================
+// ---------- HOST flow ----------
 document.getElementById('btnHost').addEventListener('click', () => {
   role = 'host';
+  document.getElementById('hostError').textContent = '';
   show('hostSetup');
 });
-
-let capturedStream = null;
 
 document.getElementById('btnCaptureAudio').addEventListener('click', async () => {
   const errEl = document.getElementById('hostError');
   errEl.textContent = '';
+
+  const isMusicMode = document.getElementById('chkMusicMode').checked;
+
   try {
-    // video:true is required by most browsers to allow tab/system audio capture
-    capturedStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-  } catch (err) {
-    errEl.textContent = "Couldn't capture audio — you may have cancelled the picker, or need to tick 'share audio'.";
-    return;
-  }
+    const audioConstraints = isMusicMode ? {
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+      channelCount: 2,
+      sampleRate: 48000
+    } : true;
 
-  const audioTracks = capturedStream.getAudioTracks();
-  if (audioTracks.length === 0) {
-    errEl.textContent = "No audio track was shared. Re-open the picker and tick 'share audio'.";
-    capturedStream.getTracks().forEach(t => t.stop());
-    return;
-  }
-  // We only need audio — drop the video track locally to save resources.
-  capturedStream.getVideoTracks().forEach(t => t.stop());
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      video: true,
+      audio: audioConstraints
+    });
 
-  socket.emit('create-room', {}, (res) => {
-    if (!res.ok) {
-      errEl.textContent = 'Could not create a room. Try again.';
+    const audioTrack = stream.getAudioTracks()[0];
+    if (!audioTrack) {
+      stream.getTracks().forEach(t => t.stop());
+      errEl.textContent = 'No audio track found. Please ensure "Share audio" was checked in the browser picker.';
       return;
     }
-    roomCode = res.roomCode;
-    document.getElementById('roomCodeDisplay').textContent = roomCode;
-    show('hostRoom');
-  });
-});
 
-document.getElementById('btnCopyLink').addEventListener('click', async () => {
-  const url = `${location.origin}${location.pathname}?join=${roomCode}`;
-  try {
-    await navigator.clipboard.writeText(url);
-    const btn = document.getElementById('btnCopyLink');
-    const original = btn.textContent;
-    btn.textContent = 'Copied!';
-    setTimeout(() => { btn.textContent = original; }, 1500);
-  } catch {
-    // clipboard may be unavailable; fall back silently
+    // Start Audio Visualizer
+    initAudioVisualizer(stream);
+
+    // Don't transmit the video track over WebRTC to save bandwidth
+    stream.getVideoTracks().forEach(vt => vt.stop());
+
+    pc = createPeerConnection();
+    pc.addTrack(audioTrack, stream);
+
+    audioTrack.onended = () => {
+      teardown();
+      show('landing');
+    };
+
+    socket.emit('create-room', {}, (res) => {
+      if (!res.ok) {
+        errEl.textContent = 'Failed to create room. Try again.';
+        return;
+      }
+      roomCode = res.roomCode;
+      document.getElementById('roomCodeDisplay').textContent = roomCode;
+      
+      // Update QR Code
+      const joinUrl = `${window.location.origin}${window.location.pathname}?room=${roomCode}`;
+      const qrBox = document.getElementById('qrcode');
+      qrBox.innerHTML = '';
+      qrCodeObj = new QRCode(qrBox, {
+        text: joinUrl,
+        width: 160,
+        height: 160
+      });
+
+      show('hostRoom');
+    });
+
+  } catch (err) {
+    console.error('Capture error:', err);
+    errEl.textContent = err.name === 'NotAllowedError'
+      ? 'Sharing canceled.'
+      : `Could not capture audio: ${err.message}`;
   }
 });
 
-// Guest joined -> host makes the offer
-socket.on('peer-joined', async () => {
-  pc = createPeerConnection();
-  capturedStream.getAudioTracks().forEach(track => pc.addTrack(track, capturedStream));
-
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-  socket.emit('signal', { signal: { type: 'offer', sdp: offer } });
+// Toggle QR Box
+document.getElementById('btnToggleQR').addEventListener('click', () => {
+  const box = document.getElementById('qrBox');
+  box.classList.toggle('hidden');
+  document.getElementById('btnToggleQR').textContent = box.classList.contains('hidden') ? 'Show QR Code' : 'Hide QR Code';
 });
 
-// =========================================================
-// GUEST FLOW
-// =========================================================
+// Copy Invite Link
+document.getElementById('btnCopyLink').addEventListener('click', async () => {
+  const link = `${window.location.origin}${window.location.pathname}?room=${roomCode}`;
+  try {
+    await navigator.clipboard.writeText(link);
+    const btn = document.getElementById('btnCopyLink');
+    btn.textContent = 'Copied link!';
+    setTimeout(() => { btn.textContent = 'Copy invite link'; }, 2000);
+  } catch (e) {
+    console.error('Failed to copy:', e);
+  }
+});
+
+// ---------- GUEST flow ----------
 document.getElementById('btnGuest').addEventListener('click', () => {
   role = 'guest';
+  document.getElementById('guestError').textContent = '';
   show('guestSetup');
-  document.getElementById('codeInput').focus();
 });
 
 const codeInput = document.getElementById('codeInput');
 codeInput.addEventListener('input', () => {
-  codeInput.value = codeInput.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
-});
-codeInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') document.getElementById('btnJoin').click();
+  codeInput.value = codeInput.value.toUpperCase();
 });
 
 document.getElementById('btnJoin').addEventListener('click', () => {
   const code = codeInput.value.trim();
-  const errEl = document.getElementById('guestError');
-  errEl.textContent = '';
-  if (code.length < 5) {
-    errEl.textContent = 'Enter the full 5-character code.';
+  if (code.length !== 5) {
+    document.getElementById('guestError').textContent = 'Enter a valid 5-character code.';
     return;
   }
-  socket.emit('join-room', { roomCode: code }, (res) => {
-    if (!res.ok) {
-      errEl.textContent = res.error;
-      return;
-    }
-    roomCode = res.roomCode;
-    document.getElementById('guestRoomLabel').textContent = roomCode;
-    pc = createPeerConnection();
-    pc.ontrack = (e) => {
-      const audioEl = document.getElementById('remoteAudio');
-      audioEl.srcObject = e.streams[0];
-      document.getElementById('guestHint').textContent = 'Audio connected.';
-    };
-    show('guestRoom');
-  });
+  joinRoomWithCode(code);
 });
 
-// Pre-fill room code from an invite link like ?join=ABCDE
-const params = new URLSearchParams(location.search);
-if (params.get('join')) {
-  document.getElementById('btnGuest').click();
-  codeInput.value = params.get('join').toUpperCase();
+function joinRoomWithCode(code) {
+  role = 'guest';
+  const errEl = document.getElementById('guestError');
+  errEl.textContent = '';
+
+  socket.emit('join-room', { roomCode: code }, (res) => {
+    if (!res.ok) {
+      errEl.textContent = res.error || 'Could not join room.';
+      show('guestSetup');
+      return;
+    }
+    roomCode = code;
+    document.getElementById('guestRoomLabel').textContent = code;
+    document.getElementById('guestStatus').textContent = 'Connecting';
+    document.getElementById('guestStatus').classList.remove('live');
+    show('guestRoom');
+  });
 }
 
-// =========================================================
-// SHARED SIGNALING HANDLER
-// =========================================================
+// Volume & Mute Controls
+const remoteAudio = document.getElementById('remoteAudio');
+const volumeSlider = document.getElementById('volumeSlider');
+const btnMute = document.getElementById('btnMute');
+const volumePercent = document.getElementById('volumePercent');
+
+if (volumeSlider && remoteAudio) {
+  volumeSlider.addEventListener('input', (e) => {
+    const val = parseFloat(e.target.value);
+    remoteAudio.volume = val;
+    remoteAudio.muted = val === 0;
+    btnMute.textContent = val === 0 ? '🔇' : '🔊';
+    volumePercent.textContent = `${Math.round(val * 100)}%`;
+  });
+}
+
+if (btnMute && remoteAudio) {
+  btnMute.addEventListener('click', () => {
+    remoteAudio.muted = !remoteAudio.muted;
+    btnMute.textContent = remoteAudio.muted ? '🔇' : '🔊';
+    if (volumeSlider) {
+      volumeSlider.value = remoteAudio.muted ? 0 : remoteAudio.volume;
+      volumePercent.textContent = remoteAudio.muted ? '0%' : `${Math.round(remoteAudio.volume * 100)}%`;
+    }
+  });
+}
+
+// ---------- WebRTC signaling events ----------
+socket.on('peer-joined', async () => {
+  if (role !== 'host') return;
+  try {
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    socket.emit('signal', { signal: { type: 'sdp', sdp: pc.localDescription } });
+  } catch (err) {
+    console.error('Failed creating SDP offer:', err);
+  }
+});
+
 socket.on('signal', async (signal) => {
-  if (!pc) return;
-  if (signal.type === 'offer') {
-    await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    socket.emit('signal', { signal: { type: 'answer', sdp: answer } });
-  } else if (signal.type === 'answer') {
-    await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+  if (!signal) return;
+
+  if (signal.type === 'sdp') {
+    if (signal.sdp.type === 'offer') {
+      if (role !== 'guest') return;
+      pc = createPeerConnection();
+      
+      pc.ontrack = (e) => {
+        remoteAudio.srcObject = e.streams[0];
+        initAudioVisualizer(e.streams[0]);
+      };
+
+      await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      socket.emit('signal', { signal: { type: 'sdp', sdp: pc.localDescription } });
+    } else if (signal.sdp.type === 'answer') {
+      if (role !== 'host' || !pc) return;
+      await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+    }
   } else if (signal.type === 'ice') {
+    if (!pc) return;
     try {
       await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
     } catch (err) {
-      console.warn('Failed to add ICE candidate', err);
+      console.error('Error adding ICE candidate:', err);
     }
   }
 });
 
 socket.on('peer-left', () => {
   teardown();
-  if (role === 'host') {
-    document.getElementById('hostStatus').textContent = 'Waiting for listener';
-    document.getElementById('hostStatus').classList.remove('live');
-  } else if (role === 'guest') {
-    document.getElementById('guestStatus').textContent = 'Listener left. Room closed.';
+  if (role === 'guest') {
+    document.getElementById('guestError').textContent = 'The host has ended the room.';
+    show('guestSetup');
+  } else if (role === 'host') {
+    const pill = document.getElementById('hostStatus');
+    pill.textContent = 'Waiting for listener';
+    pill.classList.remove('live');
+  }
+});
+
+// ---------- Auto-Join from URL (`?room=ABCDE`) ----------
+window.addEventListener('DOMContentLoaded', () => {
+  const urlParams = new URLSearchParams(window.location.search);
+  const roomParam = urlParams.get('room') || urlParams.get('code');
+  if (roomParam && roomParam.length === 5) {
+    codeInput.value = roomParam.toUpperCase();
+    joinRoomWithCode(roomParam.toUpperCase());
   }
 });

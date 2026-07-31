@@ -11,8 +11,12 @@
 </head>
 <body>
 
-<div class="freq-strip" id="freqStrip" aria-hidden="true">
-  <!-- bars injected by JS -->
+<!-- Floating Emoji Reaction Layer -->
+<div id="emojiOverlay" class="emoji-overlay" aria-hidden="true"></div>
+
+<!-- Ambient / Real Audio Spectrum Canvas -->
+<div class="visualizer-container">
+  <canvas id="visualizerCanvas"></canvas>
 </div>
 
 <main class="stage">
@@ -44,16 +48,51 @@
     <button class="back-link" data-back>&larr; back</button>
     <h2>Start sharing</h2>
     <p class="muted">You'll be asked to pick a tab, window, or your whole screen — make sure to tick <strong>"share audio"</strong> in that dialog.</p>
+
+    <div class="mode-toggle-card">
+      <label class="toggle-label">
+        <input type="checkbox" id="chkMusicMode" checked />
+        <span class="toggle-slider"></span>
+        <div class="toggle-text">
+          <strong>Hi-Fi Music Mode</strong>
+          <span>Stereo 48kHz, no echo cancellation for full music quality</span>
+        </div>
+      </label>
+    </div>
+
     <button class="primary-btn" id="btnCaptureAudio">Choose what to share</button>
     <p class="error" id="hostError"></p>
   </section>
 
   <!-- HOST: room live -->
   <section class="view hidden" id="view-host-room">
-    <span class="status-pill" id="hostStatus">Waiting for listener</span>
-    <p class="muted">Share this code</p>
+    <div class="status-row">
+      <span class="status-pill" id="hostStatus">Waiting for listener</span>
+      <span class="stats-badge hidden" id="hostStats">⚡ -- ms</span>
+    </div>
+    
+    <p class="muted">Share this code or scan QR</p>
     <div class="room-code" id="roomCodeDisplay">-----</div>
-    <button class="secondary-btn" id="btnCopyLink">Copy invite link</button>
+    
+    <div class="action-row">
+      <button class="secondary-btn" id="btnCopyLink">Copy invite link</button>
+      <button class="secondary-btn" id="btnToggleQR">Show QR Code</button>
+    </div>
+
+    <div class="qr-box hidden" id="qrBox">
+      <div id="qrcode"></div>
+    </div>
+
+    <!-- Reactions Panel -->
+    <div class="reactions-bar" id="hostReactions">
+      <span class="reactions-title">Send reaction:</span>
+      <button class="emoji-btn" data-emoji="🔥">🔥</button>
+      <button class="emoji-btn" data-emoji="🎵">🎵</button>
+      <button class="emoji-btn" data-emoji="❤️">❤️</button>
+      <button class="emoji-btn" data-emoji="👏">👏</button>
+      <button class="emoji-btn" data-emoji="🎉">🎉</button>
+    </div>
+
     <p class="muted small">Keep this tab open — closing it ends the broadcast.</p>
   </section>
 
@@ -68,14 +107,37 @@
 
   <!-- GUEST: connected -->
   <section class="view hidden" id="view-guest-room">
-    <span class="status-pill" id="guestStatus">Connecting</span>
+    <div class="status-row">
+      <span class="status-pill" id="guestStatus">Connecting</span>
+      <span class="stats-badge hidden" id="guestStats">⚡ -- ms</span>
+    </div>
+
     <p class="muted">Room <strong id="guestRoomLabel"></strong></p>
     <audio id="remoteAudio" autoplay></audio>
+
+    <!-- Volume & Audio Controls -->
+    <div class="volume-card">
+      <button class="icon-btn" id="btnMute" title="Mute/Unmute">🔊</button>
+      <input type="range" class="volume-slider" id="volumeSlider" min="0" max="1" step="0.01" value="1" />
+      <span id="volumePercent">100%</span>
+    </div>
+
+    <!-- Reactions Panel -->
+    <div class="reactions-bar" id="guestReactions">
+      <span class="reactions-title">Send reaction:</span>
+      <button class="emoji-btn" data-emoji="🔥">🔥</button>
+      <button class="emoji-btn" data-emoji="🎵">🎵</button>
+      <button class="emoji-btn" data-emoji="❤️">❤️</button>
+      <button class="emoji-btn" data-emoji="👏">👏</button>
+      <button class="emoji-btn" data-emoji="🎉">🎉</button>
+    </div>
+
     <p class="muted small" id="guestHint">Audio will start automatically once the sender is streaming.</p>
   </section>
 
 </main>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 <script src="client.js"></script>
 </body>

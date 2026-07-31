@@ -61,6 +61,17 @@ io.on('connection', (socket) => {
     io.to(room.host).emit('peer-joined');
   });
 
+  // Relay reactions (emojis) to the other peer in the room
+  socket.on('reaction', (data) => {
+    const code = socket.data.roomCode;
+    const room = rooms[code];
+    if (!room) return;
+    const targetId = socket.data.role === 'host' ? room.guest : room.host;
+    if (targetId) {
+      io.to(targetId).emit('reaction', data);
+    }
+  });
+
   // Relay WebRTC signaling data (SDP offers/answers, ICE candidates) to the other peer in the room
   socket.on('signal', (data) => {
     const code = socket.data.roomCode;
