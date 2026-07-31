@@ -19,6 +19,13 @@ let audioCtx = null;
 let analyserNode = null;
 let visualizerAnimFrame = null;
 
+// DJ Mic Overlay state
+let systemStream = null;
+let micStream = null;
+let mixAudioCtx = null;
+let micGainNode = null;
+let isMicActive = false;
+
 // Real-Time Stats loop
 let statsInterval = null;
 let lastBytesReceived = 0;
@@ -49,8 +56,28 @@ function teardown() {
   if (pc) { pc.close(); pc = null; }
   stopVisualizer();
   stopStatsLoop();
+  stopDjMic();
+  systemStream = null;
   document.getElementById('hostStats').classList.add('hidden');
   document.getElementById('guestStats').classList.add('hidden');
+}
+
+function stopDjMic() {
+  if (micStream) {
+    micStream.getTracks().forEach(t => t.stop());
+    micStream = null;
+  }
+  if (mixAudioCtx) {
+    mixAudioCtx.close();
+    mixAudioCtx = null;
+  }
+  isMicActive = false;
+  const btn = document.getElementById('btnToggleMic');
+  const txt = document.getElementById('micStatusText');
+  const wrap = document.getElementById('micVolumeWrap');
+  if (btn) btn.classList.remove('active');
+  if (txt) txt.textContent = 'Enable DJ Mic';
+  if (wrap) wrap.classList.add('hidden');
 }
 
 // ---------- Real Audio Visualizer (Canvas) ----------
@@ -252,6 +279,8 @@ document.getElementById('btnCaptureAudio').addEventListener('click', async () =>
       return;
     }
 
+    systemStream = stream;
+
     // Start Audio Visualizer
     initAudioVisualizer(stream);
 
@@ -294,6 +323,63 @@ document.getElementById('btnCaptureAudio').addEventListener('click', async () =>
       : `Could not capture audio: ${err.message}`;
   }
 });
+
+// ---------- DJ MIC OVERLAY TOGGLE ----------
+const btnToggleMic = document.getElementById('btnToggleMic');
+const micVolumeSlider = document.getElementById('micVolumeSlider');
+
+if (btnToggleMic) {
+  btnToggleMic.addEventListener('click', async () => {
+    if (!systemStream || !pc) return;
+
+    if (!isMicActive) {
+      try {
+        micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mixAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+        const systemSource = mixAudioCtx.createMediaStreamSource(systemStream);
+        const micSource = mixAudioCtx.createMediaStreamSource(micStream);
+
+        micGainNode = mixAudioCtx.createGain();
+        micGainNode.gain.value = parseFloat(micVolumeSlider ? micVolumeSlider.value : 1);
+
+        const dest = mixAudioCtx.createMediaStreamDestination();
+        systemSource.connect(dest);
+        micSource.connect(micGainNode);
+        micGainNode.connect(dest);
+
+        const mixedTrack = dest.stream.getAudioTracks()[0];
+        const sender = pc.getSenders().find(s => s.track && s.track.kind === 'audio');
+        if (sender) {
+          sender.replaceTrack(mixedTrack);
+        }
+
+        isMicActive = true;
+        btnToggleMic.classList.add('active');
+        document.getElementById('micStatusText').textContent = 'DJ Mic ON (Live)';
+        document.getElementById('micVolumeWrap').classList.remove('hidden');
+      } catch (err) {
+        console.error('Microphone error:', err);
+        alert('Could not access microphone: ' + err.message);
+      }
+    } else {
+      const originalTrack = systemStream.getAudioTracks()[0];
+      const sender = pc.getSenders().find(s => s.track && s.track.kind === 'audio');
+      if (sender && originalTrack) {
+        sender.replaceTrack(originalTrack);
+      }
+      stopDjMic();
+    }
+  });
+}
+
+if (micVolumeSlider) {
+  micVolumeSlider.addEventListener('input', (e) => {
+    if (micGainNode) {
+      micGainNode.gain.value = parseFloat(e.target.value);
+    }
+  });
+}
 
 // Toggle QR Box
 document.getElementById('btnToggleQR').addEventListener('click', () => {

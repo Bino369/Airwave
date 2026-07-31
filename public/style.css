@@ -400,6 +400,54 @@ h2 {
   transform: scale(1.3);
 }
 
+/* --- DJ Mic Overlay Card --- */
+.dj-mic-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  padding: 14px 18px;
+  border-radius: 14px;
+}
+.dj-mic-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: 1px solid var(--signal);
+  color: var(--signal);
+  padding: 10px 20px;
+  border-radius: 999px;
+  font-family: 'Space Grotesk', sans-serif;
+  font-weight: 700;
+  font-size: 0.95rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.dj-mic-btn:hover {
+  background: rgba(255, 93, 58, 0.1);
+}
+.dj-mic-btn.active {
+  background: var(--signal);
+  color: #1a0d08;
+  border-color: var(--signal);
+  animation: micPulse 1.5s ease-in-out infinite;
+}
+@keyframes micPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 93, 58, 0.5); }
+  50% { box-shadow: 0 0 0 10px rgba(255, 93, 58, 0); }
+}
+.mic-volume-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  max-width: 280px;
+}
+
 .error {
   color: var(--signal);
   font-size: 0.9rem;
