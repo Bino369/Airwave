@@ -2,7 +2,7 @@
 const SIGNALING_SERVER_URL = window.SIGNALING_SERVER_URL || (
   window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
     ? undefined // connects to same origin when running locally
-    : 'https://YOUR-RENDER-APP-NAME.onrender.com' // Replace with your deployed Render/Railway backend URL
+    : 'https://airwave-8p40.onrender.com' // Deployed Render backend URL
 );
 
 const socket = SIGNALING_SERVER_URL ? io(SIGNALING_SERVER_URL) : io();
