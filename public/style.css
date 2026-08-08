@@ -454,3 +454,38 @@ h2 {
   min-height: 1.2em;
   margin: 0;
 }
+
+/* --- Server Status Badge (Render Cold Start) --- */
+.server-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(255, 179, 0, 0.15);
+  border: 1px solid rgba(255, 179, 0, 0.4);
+  color: #FFC107;
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 500;
+  transition: all 0.3s ease;
+}
+.server-status-badge.hidden {
+  display: none;
+}
+.server-status-badge.ready {
+  background: rgba(51, 214, 166, 0.15);
+  border-color: rgba(51, 214, 166, 0.4);
+  color: var(--live);
+}
+.pulse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: pulseGlow 1.5s ease-in-out infinite;
+}
+@keyframes pulseGlow {
+  0%, 100% { opacity: 0.3; transform: scale(0.9); }
+  50% { opacity: 1; transform: scale(1.2); }
+}
+

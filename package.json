@@ -4,7 +4,7 @@
   "description": "Share system/tab audio live from one browser to another over WebRTC",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node --max-old-space-size=256 server.js"
   },
   "dependencies": {
     "express": "^4.19.2",

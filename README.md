@@ -49,13 +49,21 @@ Airwave is a real-time, browser-to-browser audio sharing application. Built with
 
 ## ☁️ Deployment
 
-### 1. Backend (Render / Railway / Fly.io)
-Deploy `server.js` as a Node service:
+### 1. Backend (Render Free Tier)
+Airwave is pre-optimized for **Render's Free Web Service**:
+- **Blueprint Deployment:** Connect repo to Render and select `render.yaml` for automatic 1-click configuration.
 - **Build Command:** `npm install`
-- **Start Command:** `node server.js`
+- **Start Command:** `npm start` (runs `node --max-old-space-size=256 server.js` to ensure low memory footprint under Render's 512MB RAM cap).
+- **Health Check Path:** `/health`
+
+#### ⚡ Render Free Tier Optimizations Built-In:
+- **Memory Guard:** Auto-sweeps stale room signaling states after 1 hour of inactivity and caps Node V8 memory to 256MB.
+- **Cold Start Warmup:** Frontend auto-pings `/health` on load and displays a non-intrusive status badge while the free tier instance wakes up (~20-30s).
+- **Socket.IO Heartbeats:** Configured with 45s timeouts and auto-reconnection tuned for serverless & PaaS container proxies.
+- **Optional Self-Ping Keep-Alive:** Set environment variable `KEEP_ALIVE=true` or `RENDER_EXTERNAL_URL` in Render dashboard to enable automated background self-pings every 14 minutes.
 
 ### 2. Frontend (Vercel)
-- Update `SIGNALING_SERVER_URL` in `public/client.js` with your deployed backend URL.
+- Update `SIGNALING_SERVER_URL` in `public/client.js` with your deployed Render backend URL.
 - Deploy the repository to **Vercel**. `vercel.json` is pre-configured to route static assets automatically.
 
 ---
@@ -63,5 +71,3 @@ Deploy `server.js` as a Node service:
 ## 📜 License
 
 MIT License © 2026
-# Airwave
-# Airwave

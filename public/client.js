@@ -5,7 +5,70 @@ const SIGNALING_SERVER_URL = window.SIGNALING_SERVER_URL || (
     : 'https://airwave-8p40.onrender.com' // Deployed Render backend URL
 );
 
-const socket = SIGNALING_SERVER_URL ? io(SIGNALING_SERVER_URL) : io();
+// Tuned for Render free tier cold starts (~30s spin up)
+const socketOptions = {
+  transports: ['websocket', 'polling'],
+  reconnection: true,
+  reconnectionAttempts: 15,
+  reconnectionDelay: 2000,
+  reconnectionDelayMax: 5000,
+  timeout: 45000
+};
+
+const socket = SIGNALING_SERVER_URL ? io(SIGNALING_SERVER_URL, socketOptions) : io(socketOptions);
+
+// Render Free Tier Warmup & Status Handler
+const serverWarmupBadge = document.getElementById('serverWarmupBadge');
+const serverStatusText = document.getElementById('serverStatusText');
+
+function updateServerBadge(text, isReady = false, isConnecting = true) {
+  if (!serverWarmupBadge || !serverStatusText) return;
+  if (!isConnecting && isReady) {
+    // Hide badge once connected and ready
+    serverWarmupBadge.classList.add('hidden');
+    return;
+  }
+  serverWarmupBadge.classList.remove('hidden');
+  if (isReady) {
+    serverWarmupBadge.classList.add('ready');
+  } else {
+    serverWarmupBadge.classList.remove('ready');
+  }
+  serverStatusText.textContent = text;
+}
+
+// Pre-warm backend on page load
+(function prewarmBackend() {
+  const targetUrl = SIGNALING_SERVER_URL || window.location.origin;
+  updateServerBadge('Waking up server... (Render free tier taking ~20s)', false, true);
+  fetch(targetUrl + '/health', { cache: 'no-store' })
+    .then(r => r.json())
+    .then(() => {
+      updateServerBadge('Server Ready', true, false);
+    })
+    .catch(() => {
+      updateServerBadge('Connecting to signaling server...', false, true);
+    });
+})();
+
+socket.on('connect', () => {
+  console.log('Connected to signaling server:', socket.id);
+  updateServerBadge('Server Ready', true, false);
+});
+
+socket.on('disconnect', (reason) => {
+  console.warn('Disconnected from signaling server:', reason);
+  updateServerBadge('Disconnected. Reconnecting...', false, true);
+});
+
+socket.on('connect_error', (error) => {
+  console.warn('Signaling connection error:', error.message);
+  updateServerBadge('Waking up backend server... Please wait', false, true);
+});
+
+socket.on('reconnect_attempt', (attempt) => {
+  updateServerBadge(`Connecting... (Attempt ${attempt})`, false, true);
+});
 
 const ICE_SERVERS = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
