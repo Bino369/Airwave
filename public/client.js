@@ -48,6 +48,25 @@ let statsInterval = null;
 let lastBytesReceived = 0;
 let lastTimestamp = 0;
 
+// ---------- Silent Audio Stream (required for WebRTC SDP negotiation on guest side) ----------
+// When the guest answers a call with no stream, WebRTC cannot negotiate audio codec → no sound.
+// We answer with a silent (0-gain) oscillator stream so SDP answer includes a valid audio line.
+function createSilentAudioStream() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const oscillator = ctx.createOscillator();
+    const gain = ctx.createGain();
+    gain.gain.value = 0; // completely silent
+    oscillator.connect(gain);
+    const dest = gain.connect(ctx.createMediaStreamDestination());
+    oscillator.start();
+    return dest.stream;
+  } catch (e) {
+    console.warn('createSilentAudioStream failed:', e);
+    return new MediaStream(); // fallback empty stream
+  }
+}
+
 // ---------- Views ----------
 const views = {
   landing: document.getElementById('view-landing'),
@@ -292,7 +311,9 @@ document.getElementById('btnCaptureAudio').addEventListener('click', async () =>
       activeDataConn = dataConn;
 
       dataConn.on('data', (data) => {
-        if (data && data.type === 'reaction' && data.emoji) spawnEmoji(data.emoji);
+        if (!data) return;
+        if (data.type === 'reaction' && data.emoji) spawnEmoji(data.emoji);
+        if (data.type === 'ping') dataConn.send({ type: 'pong' }); // keepalive response
       });
 
       // Host calls guest — one-way: host sends stream, guest receives
@@ -437,10 +458,21 @@ function joinRoomWithCode(code) {
     dataConn.on('open', () => {
       console.log('Data channel open to host. Waiting for host to call back...');
       document.getElementById('guestStatus').textContent = 'Waiting for stream...';
+
+      // Heartbeat to keep the data channel and ICE alive (prevents mobile disconnects)
+      const heartbeat = setInterval(() => {
+        if (dataConn && dataConn.open) {
+          dataConn.send({ type: 'ping' });
+        } else {
+          clearInterval(heartbeat);
+        }
+      }, 5000);
     });
 
     dataConn.on('data', (data) => {
-      if (data && data.type === 'reaction' && data.emoji) spawnEmoji(data.emoji);
+      if (!data) return;
+      if (data.type === 'reaction' && data.emoji) spawnEmoji(data.emoji);
+      // ignore 'ping' / 'pong' keepalive messages
     });
 
     dataConn.on('error', (err) => {
@@ -450,11 +482,15 @@ function joinRoomWithCode(code) {
     });
   });
 
-  // Step 2: Host will call us — answer and receive stream
+  // Step 2: Host will call us back — MUST answer with a silent stream for proper SDP negotiation
   peer.on('call', (call) => {
     console.log('HOST is calling us with audio stream!');
     activeMediaConn = call;
-    call.answer(); // No stream from guest side — receive only
+
+    // Create a silent audio stream so the SDP answer includes a proper audio codec.
+    // Without this, WebRTC cannot negotiate the audio track and no sound arrives.
+    const silentStream = createSilentAudioStream();
+    call.answer(silentStream);
 
     call.on('stream', (remoteStream) => {
       console.log('Got remote audio stream!');
