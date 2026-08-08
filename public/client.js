@@ -83,9 +83,33 @@ socket.on('reconnect_attempt', (attempt) => {
   updateServerStatus(`Connecting... (Attempt ${attempt})`, 'connecting');
 });
 
-const ICE_SERVERS = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+const ICE_SERVERS = {
+  iceServers: [
+    // Multi-Region Public STUN Servers
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+    { urls: 'stun:global.stun.twilio.com:3478' },
+    { urls: 'stun:stun.services.mozilla.com' },
+    // Free TURN Relay Servers (Metered OpenRelay - fallback for symmetric NATs / 4G / 5G / Firewalls)
+    {
+      urls: [
+        'turn:openrelay.metered.ca:80',
+        'turn:openrelay.metered.ca:443',
+        'turn:openrelay.metered.ca:443?transport=tcp',
+        'turns:openrelay.metered.ca:443?transport=tcp'
+      ],
+      username: 'openrelay',
+      credential: 'openrelay'
+    }
+  ],
+  iceCandidatePoolSize: 10
+};
 
 let pc = null;
+let pendingIceCandidates = [];
 let role = null; // 'host' | 'guest'
 let roomCode = null;
 let qrCodeObj = null;
@@ -297,27 +321,61 @@ function stopStatsLoop() {
 
 // ---------- shared peer connection setup ----------
 function createPeerConnection() {
+  pendingIceCandidates = [];
   const conn = new RTCPeerConnection(ICE_SERVERS);
+
   conn.onicecandidate = (e) => {
     if (e.candidate) {
       socket.emit('signal', { signal: { type: 'ice', candidate: e.candidate } });
     }
   };
+
+  conn.oniceconnectionstatechange = () => {
+    console.log('ICE Connection state:', conn.iceConnectionState);
+    if (conn.iceConnectionState === 'failed') {
+      console.warn('ICE Connection Failed - Attempting ICE Restart across networks...');
+      if (role === 'host' && pc) {
+        try {
+          pc.restartIce();
+        } catch (err) {
+          console.error('ICE Restart error:', err);
+        }
+      }
+    }
+  };
+
   conn.onconnectionstatechange = () => {
-    const connected = conn.connectionState === 'connected';
+    const state = conn.connectionState;
+    console.log('RTC Connection state:', state);
+    const connected = state === 'connected';
+
     if (role === 'host') {
       const pill = document.getElementById('hostStatus');
-      pill.textContent = connected ? 'Live' : 'Waiting for listener';
+      if (state === 'connecting') {
+        pill.textContent = 'Connecting across networks...';
+      } else if (state === 'failed') {
+        pill.textContent = 'Retrying P2P link...';
+      } else {
+        pill.textContent = connected ? 'Live' : 'Waiting for listener';
+      }
       pill.classList.toggle('live', connected);
     } else if (role === 'guest') {
       const pill = document.getElementById('guestStatus');
-      pill.textContent = connected ? 'Streaming live' : 'Connecting';
+      if (state === 'connecting') {
+        pill.textContent = 'Connecting across networks...';
+      } else if (state === 'failed') {
+        pill.textContent = 'Retrying connection...';
+      } else {
+        pill.textContent = connected ? 'Streaming live' : 'Connecting';
+      }
       pill.classList.toggle('live', connected);
     }
+
     if (connected) {
       startStatsLoop();
     }
   };
+
   return conn;
 }
 
@@ -570,19 +628,44 @@ socket.on('signal', async (signal) => {
       };
 
       await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+
+      // Flush buffered ICE candidates
+      while (pendingIceCandidates.length > 0) {
+        const candidate = pendingIceCandidates.shift();
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(candidate));
+        } catch (e) {
+          console.warn('Error applying buffered ICE candidate on guest:', e);
+        }
+      }
+
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       socket.emit('signal', { signal: { type: 'sdp', sdp: pc.localDescription } });
     } else if (signal.sdp.type === 'answer') {
       if (role !== 'host' || !pc) return;
       await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+
+      // Flush buffered ICE candidates for host
+      while (pendingIceCandidates.length > 0) {
+        const candidate = pendingIceCandidates.shift();
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(candidate));
+        } catch (e) {
+          console.warn('Error applying buffered ICE candidate on host:', e);
+        }
+      }
     }
   } else if (signal.type === 'ice') {
     if (!pc) return;
-    try {
-      await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
-    } catch (err) {
-      console.error('Error adding ICE candidate:', err);
+    if (pc.remoteDescription && pc.remoteDescription.type) {
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
+      } catch (err) {
+        console.error('Error adding ICE candidate:', err);
+      }
+    } else {
+      pendingIceCandidates.push(signal.candidate);
     }
   }
 });
