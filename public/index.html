@@ -14,12 +14,6 @@
 <!-- Floating Emoji Reaction Layer -->
 <div id="emojiOverlay" class="emoji-overlay" aria-hidden="true"></div>
 
-<!-- Small Backend Status Alert Light -->
-<div id="backendAlertLight" class="backend-alert-light connecting" title="Backend Status">
-  <span class="status-dot"></span>
-  <span class="status-label" id="backendAlertText">Backend Waking</span>
-</div>
-
 <!-- Ambient / Real Audio Spectrum Canvas -->
 <div class="visualizer-container">
   <canvas id="visualizerCanvas"></canvas>
@@ -32,10 +26,6 @@
     <div class="brand">
       <span class="brand-mark">))) </span>
       <h1>Airwave</h1>
-    </div>
-    <div id="serverWarmupBadge" class="server-status-badge hidden">
-      <span class="pulse-dot"></span>
-      <span id="serverStatusText">Waking up server... (Render free tier)</span>
     </div>
     <p class="tagline">Play something on your machine. It plays on theirs. Same moment, no upload, no file.</p>
 
@@ -160,7 +150,7 @@
 </main>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script src="client.js"></script>
 </body>
 </html>

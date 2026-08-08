@@ -1,87 +1,4 @@
-// Connect to custom signaling server if specified, otherwise auto-detect local vs deployed backend URL
-const SIGNALING_SERVER_URL = window.SIGNALING_SERVER_URL || (
-  window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-    ? undefined // connects to same origin when running locally
-    : 'https://airwave-8p40.onrender.com' // Deployed Render backend URL
-);
-
-// Tuned for Render free tier cold starts (~30s spin up)
-const socketOptions = {
-  transports: ['websocket', 'polling'],
-  reconnection: true,
-  reconnectionAttempts: 15,
-  reconnectionDelay: 2000,
-  reconnectionDelayMax: 5000,
-  timeout: 45000
-};
-
-const socket = SIGNALING_SERVER_URL ? io(SIGNALING_SERVER_URL, socketOptions) : io(socketOptions);
-
-// Render Free Tier Warmup & Status Handler
-const serverWarmupBadge = document.getElementById('serverWarmupBadge');
-const serverStatusText = document.getElementById('serverStatusText');
-const backendAlertLight = document.getElementById('backendAlertLight');
-const backendAlertText = document.getElementById('backendAlertText');
-
-function updateServerStatus(text, statusState = 'connecting') {
-  // statusState: 'online' | 'connecting' | 'offline'
-  if (backendAlertLight && backendAlertText) {
-    backendAlertLight.classList.remove('online', 'connecting', 'offline');
-    backendAlertLight.classList.add(statusState);
-    if (statusState === 'online') {
-      backendAlertText.textContent = 'Backend Online';
-      backendAlertLight.setAttribute('title', 'Signaling Server: Connected & Operational');
-    } else if (statusState === 'offline') {
-      backendAlertText.textContent = 'Backend Offline';
-      backendAlertLight.setAttribute('title', 'Signaling Server: Connection Failed');
-    } else {
-      backendAlertText.textContent = 'Backend Waking';
-      backendAlertLight.setAttribute('title', 'Signaling Server: Waking up from Render free tier sleep...');
-    }
-  }
-
-  if (serverWarmupBadge && serverStatusText) {
-    if (statusState === 'online') {
-      serverWarmupBadge.classList.add('hidden');
-    } else {
-      serverWarmupBadge.classList.remove('hidden');
-      serverStatusText.textContent = text;
-    }
-  }
-}
-
-// Pre-warm backend on page load
-(function prewarmBackend() {
-  const targetUrl = SIGNALING_SERVER_URL || window.location.origin;
-  updateServerStatus('Waking up server... (Render free tier taking ~20s)', 'connecting');
-  fetch(targetUrl + '/health', { cache: 'no-store' })
-    .then(r => r.json())
-    .then(() => {
-      updateServerStatus('Server Ready', 'online');
-    })
-    .catch(() => {
-      updateServerStatus('Connecting to signaling server...', 'connecting');
-    });
-})();
-
-socket.on('connect', () => {
-  console.log('Connected to signaling server:', socket.id);
-  updateServerStatus('Server Ready', 'online');
-});
-
-socket.on('disconnect', (reason) => {
-  console.warn('Disconnected from signaling server:', reason);
-  updateServerStatus('Disconnected. Reconnecting...', 'offline');
-});
-
-socket.on('connect_error', (error) => {
-  console.warn('Signaling connection error:', error.message);
-  updateServerStatus('Waking up backend server... Please wait', 'connecting');
-});
-
-socket.on('reconnect_attempt', (attempt) => {
-  updateServerStatus(`Connecting... (Attempt ${attempt})`, 'connecting');
-});
+// Airwave — 100% Vercel WebRTC Cloud Signaling via PeerJS
 
 const ICE_SERVERS = {
   iceServers: [
@@ -93,7 +10,7 @@ const ICE_SERVERS = {
     { urls: 'stun:stun4.l.google.com:19302' },
     { urls: 'stun:global.stun.twilio.com:3478' },
     { urls: 'stun:stun.services.mozilla.com' },
-    // Free TURN Relay Servers (Metered OpenRelay - fallback for symmetric NATs / 4G / 5G / Firewalls)
+    // Free TURN Relay Servers (Metered OpenRelay - 100% cross-network NAT & firewall traversal)
     {
       urls: [
         'turn:openrelay.metered.ca:80',
@@ -104,12 +21,14 @@ const ICE_SERVERS = {
       username: 'openrelay',
       credential: 'openrelay'
     }
-  ],
-  iceCandidatePoolSize: 10
+  ]
 };
 
-let pc = null;
-let pendingIceCandidates = [];
+const PEER_PREFIX = 'airwave-room-';
+
+let peer = null;
+let activeMediaConn = null;
+let activeDataConn = null;
 let role = null; // 'host' | 'guest'
 let roomCode = null;
 let qrCodeObj = null;
@@ -131,7 +50,7 @@ let statsInterval = null;
 let lastBytesReceived = 0;
 let lastTimestamp = 0;
 
-// ---------- views switching ----------
+// ---------- Views Switching ----------
 const views = {
   landing: document.getElementById('view-landing'),
   hostSetup: document.getElementById('view-host-setup'),
@@ -152,11 +71,20 @@ document.querySelectorAll('[data-back]').forEach(btn => {
   });
 });
 
+function generateRoomCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  return Array.from({ length: 5 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+}
+
 function teardown() {
-  if (pc) { pc.close(); pc = null; }
+  if (activeMediaConn) { activeMediaConn.close(); activeMediaConn = null; }
+  if (activeDataConn) { activeDataConn.close(); activeDataConn = null; }
+  if (peer) { peer.destroy(); peer = null; }
+  
   stopVisualizer();
   stopStatsLoop();
   stopDjMic();
+  
   systemStream = null;
   document.getElementById('hostStats').classList.add('hidden');
   document.getElementById('guestStats').classList.add('hidden');
@@ -224,7 +152,6 @@ function drawVisualizer() {
   for (let i = 0; i < bufferLength; i++) {
     const barHeight = (dataArray[i] / 255) * (canvas.height * 0.4);
     
-    // Dynamic Gradient based on intensity
     const gradient = canvasCtx.createLinearGradient(0, canvas.height, 0, canvas.height - barHeight);
     gradient.addColorStop(0, 'rgba(255, 93, 58, 0.2)');
     gradient.addColorStop(0.5, 'rgba(255, 93, 58, 0.7)');
@@ -261,28 +188,22 @@ document.querySelectorAll('.emoji-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     const emoji = btn.getAttribute('data-emoji');
     spawnEmoji(emoji);
-    if (roomCode) {
-      socket.emit('reaction', { emoji });
+    if (activeDataConn && activeDataConn.open) {
+      activeDataConn.send({ type: 'reaction', emoji });
     }
   });
 });
 
-socket.on('reaction', (data) => {
-  if (data && data.emoji) {
-    spawnEmoji(data.emoji);
-  }
-});
-
 // ---------- Real-Time WebRTC Stats Loop ----------
-function startStatsLoop() {
+function startStatsLoop(mediaConn) {
   stopStatsLoop();
   lastBytesReceived = 0;
   lastTimestamp = 0;
 
   statsInterval = setInterval(async () => {
-    if (!pc) return;
+    if (!mediaConn || !mediaConn.peerConnection) return;
     try {
-      const stats = await pc.getStats();
+      const stats = await mediaConn.peerConnection.getStats();
       let rtt = null;
       let bitrate = null;
 
@@ -319,67 +240,7 @@ function stopStatsLoop() {
   if (statsInterval) { clearInterval(statsInterval); statsInterval = null; }
 }
 
-// ---------- shared peer connection setup ----------
-function createPeerConnection() {
-  pendingIceCandidates = [];
-  const conn = new RTCPeerConnection(ICE_SERVERS);
-
-  conn.onicecandidate = (e) => {
-    if (e.candidate) {
-      socket.emit('signal', { signal: { type: 'ice', candidate: e.candidate } });
-    }
-  };
-
-  conn.oniceconnectionstatechange = () => {
-    console.log('ICE Connection state:', conn.iceConnectionState);
-    if (conn.iceConnectionState === 'failed') {
-      console.warn('ICE Connection Failed - Attempting ICE Restart across networks...');
-      if (role === 'host' && pc) {
-        try {
-          pc.restartIce();
-        } catch (err) {
-          console.error('ICE Restart error:', err);
-        }
-      }
-    }
-  };
-
-  conn.onconnectionstatechange = () => {
-    const state = conn.connectionState;
-    console.log('RTC Connection state:', state);
-    const connected = state === 'connected';
-
-    if (role === 'host') {
-      const pill = document.getElementById('hostStatus');
-      if (state === 'connecting') {
-        pill.textContent = 'Connecting across networks...';
-      } else if (state === 'failed') {
-        pill.textContent = 'Retrying P2P link...';
-      } else {
-        pill.textContent = connected ? 'Live' : 'Waiting for listener';
-      }
-      pill.classList.toggle('live', connected);
-    } else if (role === 'guest') {
-      const pill = document.getElementById('guestStatus');
-      if (state === 'connecting') {
-        pill.textContent = 'Connecting across networks...';
-      } else if (state === 'failed') {
-        pill.textContent = 'Retrying connection...';
-      } else {
-        pill.textContent = connected ? 'Streaming live' : 'Connecting';
-      }
-      pill.classList.toggle('live', connected);
-    }
-
-    if (connected) {
-      startStatsLoop();
-    }
-  };
-
-  return conn;
-}
-
-// ---------- HOST flow ----------
+// ---------- HOST FLOW (Sender) ----------
 document.getElementById('btnHost').addEventListener('click', () => {
   role = 'host';
   document.getElementById('hostError').textContent = '';
@@ -409,16 +270,16 @@ document.getElementById('btnCaptureAudio').addEventListener('click', async () =>
     const audioTrack = stream.getAudioTracks()[0];
     if (!audioTrack) {
       stream.getTracks().forEach(t => t.stop());
-      errEl.textContent = 'No audio track found. Please ensure "Share audio" was checked in the browser picker.';
+      errEl.textContent = 'No audio track found. Make sure to check "Share audio" in the browser dialog.';
       return;
     }
 
     systemStream = stream;
 
-    // Start Audio Visualizer
+    // Start Audio Visualizer locally
     initAudioVisualizer(stream);
 
-    // Don't transmit the video track over WebRTC to save bandwidth
+    // Stop video track to save bandwidth
     stream.getVideoTracks().forEach(vt => vt.stop());
 
     audioTrack.onended = () => {
@@ -426,14 +287,16 @@ document.getElementById('btnCaptureAudio').addEventListener('click', async () =>
       show('landing');
     };
 
-    socket.emit('create-room', {}, (res) => {
-      if (!res.ok) {
-        errEl.textContent = 'Failed to create room. Try again.';
-        return;
-      }
-      roomCode = res.roomCode;
+    // Initialize Host PeerJS Node
+    roomCode = generateRoomCode();
+    const peerId = PEER_PREFIX + roomCode;
+
+    peer = new Peer(peerId, { config: ICE_SERVERS, debug: 1 });
+
+    peer.on('open', (id) => {
+      console.log('Host Peer registered with ID:', id);
       document.getElementById('roomCodeDisplay').textContent = roomCode;
-      
+
       // Update QR Code
       const joinUrl = `${window.location.origin}${window.location.pathname}?room=${roomCode}`;
       const qrBox = document.getElementById('qrcode');
@@ -445,6 +308,72 @@ document.getElementById('btnCaptureAudio').addEventListener('click', async () =>
       });
 
       show('hostRoom');
+    });
+
+    peer.on('error', (err) => {
+      console.error('Host Peer Error:', err);
+      if (err.type === 'unavailable-id') {
+        // Retry code generation if room code collision
+        roomCode = generateRoomCode();
+        peer = new Peer(PEER_PREFIX + roomCode, { config: ICE_SERVERS });
+      } else {
+        errEl.textContent = `P2P Error: ${err.message}`;
+      }
+    });
+
+    // Listen for guest data connections (reactions & handshakes)
+    peer.on('connection', (dataConn) => {
+      activeDataConn = dataConn;
+      console.log('Guest connected data channel:', dataConn.peer);
+
+      dataConn.on('data', (data) => {
+        if (data && data.type === 'reaction' && data.emoji) {
+          spawnEmoji(data.emoji);
+        }
+      });
+
+      // Call guest back with system audio stream
+      const mediaConn = peer.call(dataConn.peer, systemStream);
+      activeMediaConn = mediaConn;
+
+      mediaConn.on('stream', () => {
+        const pill = document.getElementById('hostStatus');
+        pill.textContent = 'Live';
+        pill.classList.add('live');
+        startStatsLoop(mediaConn);
+      });
+
+      if (mediaConn.peerConnection) {
+        mediaConn.peerConnection.onconnectionstatechange = () => {
+          const connected = mediaConn.peerConnection.connectionState === 'connected';
+          const pill = document.getElementById('hostStatus');
+          pill.textContent = connected ? 'Live' : 'Waiting for listener';
+          pill.classList.toggle('live', connected);
+          if (connected) startStatsLoop(mediaConn);
+        };
+      } else {
+        const pill = document.getElementById('hostStatus');
+        pill.textContent = 'Live';
+        pill.classList.add('live');
+        startStatsLoop(mediaConn);
+      }
+
+      mediaConn.on('close', () => {
+        const pill = document.getElementById('hostStatus');
+        pill.textContent = 'Waiting for listener';
+        pill.classList.remove('live');
+      });
+    });
+
+    // Listen for direct incoming calls
+    peer.on('call', (call) => {
+      activeMediaConn = call;
+      call.answer(systemStream);
+      
+      const pill = document.getElementById('hostStatus');
+      pill.textContent = 'Live';
+      pill.classList.add('live');
+      startStatsLoop(call);
     });
 
   } catch (err) {
@@ -461,7 +390,7 @@ const micVolumeSlider = document.getElementById('micVolumeSlider');
 
 if (btnToggleMic) {
   btnToggleMic.addEventListener('click', async () => {
-    if (!systemStream || !pc) return;
+    if (!systemStream || !activeMediaConn) return;
 
     if (!isMicActive) {
       try {
@@ -480,9 +409,9 @@ if (btnToggleMic) {
         micGainNode.connect(dest);
 
         const mixedTrack = dest.stream.getAudioTracks()[0];
-        const sender = pc.getSenders().find(s => s.track && s.track.kind === 'audio');
-        if (sender) {
-          sender.replaceTrack(mixedTrack);
+        if (activeMediaConn.peerConnection) {
+          const sender = activeMediaConn.peerConnection.getSenders().find(s => s.track && s.track.kind === 'audio');
+          if (sender) sender.replaceTrack(mixedTrack);
         }
 
         isMicActive = true;
@@ -495,9 +424,9 @@ if (btnToggleMic) {
       }
     } else {
       const originalTrack = systemStream.getAudioTracks()[0];
-      const sender = pc.getSenders().find(s => s.track && s.track.kind === 'audio');
-      if (sender && originalTrack) {
-        sender.replaceTrack(originalTrack);
+      if (activeMediaConn.peerConnection && originalTrack) {
+        const sender = activeMediaConn.peerConnection.getSenders().find(s => s.track && s.track.kind === 'audio');
+        if (sender) sender.replaceTrack(originalTrack);
       }
       stopDjMic();
     }
@@ -532,7 +461,7 @@ document.getElementById('btnCopyLink').addEventListener('click', async () => {
   }
 });
 
-// ---------- GUEST flow ----------
+// ---------- GUEST FLOW (Listener) ----------
 document.getElementById('btnGuest').addEventListener('click', () => {
   role = 'guest';
   document.getElementById('guestError').textContent = '';
@@ -555,24 +484,115 @@ document.getElementById('btnJoin').addEventListener('click', () => {
 
 function joinRoomWithCode(code) {
   role = 'guest';
+  roomCode = code;
   const errEl = document.getElementById('guestError');
   errEl.textContent = '';
 
-  socket.emit('join-room', { roomCode: code }, (res) => {
-    if (!res.ok) {
-      errEl.textContent = res.error || 'Could not join room.';
-      show('guestSetup');
-      return;
+  document.getElementById('guestRoomLabel').textContent = code;
+  document.getElementById('guestStatus').textContent = 'Connecting across networks...';
+  document.getElementById('guestStatus').classList.remove('live');
+  show('guestRoom');
+
+  peer = new Peer({ config: ICE_SERVERS, debug: 1 });
+
+  peer.on('open', (id) => {
+    console.log('Guest Peer initialized with ID:', id);
+    const targetPeerId = PEER_PREFIX + code;
+
+    // Connect Data Channel for reactions
+    const dataConn = peer.connect(targetPeerId);
+    activeDataConn = dataConn;
+
+    dataConn.on('open', () => {
+      console.log('Data channel connected to host:', targetPeerId);
+    });
+
+    dataConn.on('data', (data) => {
+      if (data && data.type === 'reaction' && data.emoji) {
+        spawnEmoji(data.emoji);
+      }
+    });
+
+    // Call host or wait for host media call
+    const call = peer.call(targetPeerId, createDummyAudioStream());
+    activeMediaConn = call;
+
+    call.on('stream', (remoteStream) => {
+      console.log('Receiving live audio stream from host');
+      const remoteAudio = document.getElementById('remoteAudio');
+      if (remoteAudio) {
+        remoteAudio.srcObject = remoteStream;
+      }
+      initAudioVisualizer(remoteStream);
+
+      const pill = document.getElementById('guestStatus');
+      pill.textContent = 'Streaming live';
+      pill.classList.add('live');
+      startStatsLoop(call);
+    });
+
+    if (call.peerConnection) {
+      call.peerConnection.onconnectionstatechange = () => {
+        const connected = call.peerConnection.connectionState === 'connected';
+        const pill = document.getElementById('guestStatus');
+        pill.textContent = connected ? 'Streaming live' : 'Connecting across networks...';
+        pill.classList.toggle('live', connected);
+        if (connected) startStatsLoop(call);
+      };
     }
-    roomCode = code;
-    document.getElementById('guestRoomLabel').textContent = code;
-    document.getElementById('guestStatus').textContent = 'Connecting';
-    document.getElementById('guestStatus').classList.remove('live');
-    show('guestRoom');
+
+    call.on('close', () => {
+      const pill = document.getElementById('guestStatus');
+      pill.textContent = 'Host disconnected';
+      pill.classList.remove('live');
+    });
+  });
+
+  peer.on('call', (call) => {
+    activeMediaConn = call;
+    call.answer();
+
+    call.on('stream', (remoteStream) => {
+      const remoteAudio = document.getElementById('remoteAudio');
+      if (remoteAudio) {
+        remoteAudio.srcObject = remoteStream;
+      }
+      initAudioVisualizer(remoteStream);
+
+      const pill = document.getElementById('guestStatus');
+      pill.textContent = 'Streaming live';
+      pill.classList.add('live');
+      startStatsLoop(call);
+    });
+  });
+
+  peer.on('error', (err) => {
+    console.error('Guest Peer Error:', err);
+    if (err.type === 'peer-unavailable') {
+      errEl.textContent = 'Room not found. Please check the 5-character code and try again.';
+      show('guestSetup');
+    } else {
+      document.getElementById('guestStatus').textContent = 'Connection error';
+    }
   });
 }
 
-// Volume & Mute Controls
+function createDummyAudioStream() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const dst = ctx.createMediaStreamDestination();
+    osc.connect(dst);
+    osc.start();
+    const track = dst.stream.getAudioTracks()[0];
+    track.enabled = false; // Muted dummy track
+    return dst.stream;
+  } catch (e) {
+    return null;
+  }
+}
+
+// ---------- Volume & Mute Controls ----------
 const remoteAudio = document.getElementById('remoteAudio');
 const volumeSlider = document.getElementById('volumeSlider');
 const btnMute = document.getElementById('btnMute');
@@ -598,94 +618,6 @@ if (btnMute && remoteAudio) {
     }
   });
 }
-
-// ---------- WebRTC signaling events ----------
-socket.on('peer-joined', async () => {
-  if (role !== 'host' || !systemStream) return;
-  try {
-    if (pc) {
-      try { pc.close(); } catch(e) {}
-    }
-    pc = createPeerConnection();
-    const audioTrack = systemStream.getAudioTracks()[0];
-    if (audioTrack) {
-      pc.addTrack(audioTrack, systemStream);
-    }
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    socket.emit('signal', { signal: { type: 'sdp', sdp: pc.localDescription } });
-  } catch (err) {
-    console.error('Failed creating SDP offer:', err);
-  }
-});
-
-socket.on('signal', async (signal) => {
-  if (!signal) return;
-
-  if (signal.type === 'sdp') {
-    if (signal.sdp.type === 'offer') {
-      if (role !== 'guest') return;
-      pc = createPeerConnection();
-      
-      pc.ontrack = (e) => {
-        remoteAudio.srcObject = e.streams[0];
-        initAudioVisualizer(e.streams[0]);
-      };
-
-      await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
-
-      // Flush buffered ICE candidates
-      while (pendingIceCandidates.length > 0) {
-        const candidate = pendingIceCandidates.shift();
-        try {
-          await pc.addIceCandidate(new RTCIceCandidate(candidate));
-        } catch (e) {
-          console.warn('Error applying buffered ICE candidate on guest:', e);
-        }
-      }
-
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      socket.emit('signal', { signal: { type: 'sdp', sdp: pc.localDescription } });
-    } else if (signal.sdp.type === 'answer') {
-      if (role !== 'host' || !pc) return;
-      await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
-
-      // Flush buffered ICE candidates for host
-      while (pendingIceCandidates.length > 0) {
-        const candidate = pendingIceCandidates.shift();
-        try {
-          await pc.addIceCandidate(new RTCIceCandidate(candidate));
-        } catch (e) {
-          console.warn('Error applying buffered ICE candidate on host:', e);
-        }
-      }
-    }
-  } else if (signal.type === 'ice') {
-    if (!pc) return;
-    if (pc.remoteDescription && pc.remoteDescription.type) {
-      try {
-        await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
-      } catch (err) {
-        console.error('Error adding ICE candidate:', err);
-      }
-    } else {
-      pendingIceCandidates.push(signal.candidate);
-    }
-  }
-});
-
-socket.on('peer-left', () => {
-  teardown();
-  if (role === 'guest') {
-    document.getElementById('guestError').textContent = 'The host has ended the room.';
-    show('guestSetup');
-  } else if (role === 'host') {
-    const pill = document.getElementById('hostStatus');
-    pill.textContent = 'Waiting for listener';
-    pill.classList.remove('live');
-  }
-});
 
 // ---------- Auto-Join from URL (`?room=ABCDE`) ----------
 window.addEventListener('DOMContentLoaded', () => {
