@@ -95,6 +95,16 @@ io.on('connection', (socket) => {
     callback({ ok: true, roomCode: code });
     // tell the host someone joined so it can start the WebRTC offer
     io.to(room.host).emit('peer-joined');
+
+    // Flush any signals buffered before guest joined
+    if (room.pendingSignals && room.pendingSignals.length > 0) {
+      room.pendingSignals.forEach(item => {
+        if (item.targetRole === 'guest') {
+          io.to(room.guest).emit('signal', item.signal);
+        }
+      });
+      room.pendingSignals = room.pendingSignals.filter(item => item.targetRole !== 'guest');
+    }
   });
 
   // Relay reactions (emojis) to the other peer in the room
@@ -115,9 +125,14 @@ io.on('connection', (socket) => {
     const room = rooms[code];
     if (!room) return;
     room.lastActive = Date.now();
+    const targetRole = socket.data.role === 'host' ? 'guest' : 'host';
     const targetId = socket.data.role === 'host' ? room.guest : room.host;
     if (targetId) {
       io.to(targetId).emit('signal', data.signal);
+    } else {
+      // Buffer signaling message (SDP or ICE candidate) until target peer joins room
+      room.pendingSignals = room.pendingSignals || [];
+      room.pendingSignals.push({ targetRole, signal: data.signal });
     }
   });
 

@@ -421,9 +421,6 @@ document.getElementById('btnCaptureAudio').addEventListener('click', async () =>
     // Don't transmit the video track over WebRTC to save bandwidth
     stream.getVideoTracks().forEach(vt => vt.stop());
 
-    pc = createPeerConnection();
-    pc.addTrack(audioTrack, stream);
-
     audioTrack.onended = () => {
       teardown();
       show('landing');
@@ -604,8 +601,16 @@ if (btnMute && remoteAudio) {
 
 // ---------- WebRTC signaling events ----------
 socket.on('peer-joined', async () => {
-  if (role !== 'host') return;
+  if (role !== 'host' || !systemStream) return;
   try {
+    if (pc) {
+      try { pc.close(); } catch(e) {}
+    }
+    pc = createPeerConnection();
+    const audioTrack = systemStream.getAudioTracks()[0];
+    if (audioTrack) {
+      pc.addTrack(audioTrack, systemStream);
+    }
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     socket.emit('signal', { signal: { type: 'sdp', sdp: pc.localDescription } });
