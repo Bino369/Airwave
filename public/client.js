@@ -20,54 +20,67 @@ const socket = SIGNALING_SERVER_URL ? io(SIGNALING_SERVER_URL, socketOptions) : 
 // Render Free Tier Warmup & Status Handler
 const serverWarmupBadge = document.getElementById('serverWarmupBadge');
 const serverStatusText = document.getElementById('serverStatusText');
+const backendAlertLight = document.getElementById('backendAlertLight');
+const backendAlertText = document.getElementById('backendAlertText');
 
-function updateServerBadge(text, isReady = false, isConnecting = true) {
-  if (!serverWarmupBadge || !serverStatusText) return;
-  if (!isConnecting && isReady) {
-    // Hide badge once connected and ready
-    serverWarmupBadge.classList.add('hidden');
-    return;
+function updateServerStatus(text, statusState = 'connecting') {
+  // statusState: 'online' | 'connecting' | 'offline'
+  if (backendAlertLight && backendAlertText) {
+    backendAlertLight.classList.remove('online', 'connecting', 'offline');
+    backendAlertLight.classList.add(statusState);
+    if (statusState === 'online') {
+      backendAlertText.textContent = 'Backend Online';
+      backendAlertLight.setAttribute('title', 'Signaling Server: Connected & Operational');
+    } else if (statusState === 'offline') {
+      backendAlertText.textContent = 'Backend Offline';
+      backendAlertLight.setAttribute('title', 'Signaling Server: Connection Failed');
+    } else {
+      backendAlertText.textContent = 'Backend Waking';
+      backendAlertLight.setAttribute('title', 'Signaling Server: Waking up from Render free tier sleep...');
+    }
   }
-  serverWarmupBadge.classList.remove('hidden');
-  if (isReady) {
-    serverWarmupBadge.classList.add('ready');
-  } else {
-    serverWarmupBadge.classList.remove('ready');
+
+  if (serverWarmupBadge && serverStatusText) {
+    if (statusState === 'online') {
+      serverWarmupBadge.classList.add('hidden');
+    } else {
+      serverWarmupBadge.classList.remove('hidden');
+      serverStatusText.textContent = text;
+    }
   }
-  serverStatusText.textContent = text;
 }
 
 // Pre-warm backend on page load
 (function prewarmBackend() {
   const targetUrl = SIGNALING_SERVER_URL || window.location.origin;
-  updateServerBadge('Waking up server... (Render free tier taking ~20s)', false, true);
+  updateServerStatus('Waking up server... (Render free tier taking ~20s)', 'connecting');
   fetch(targetUrl + '/health', { cache: 'no-store' })
     .then(r => r.json())
     .then(() => {
-      updateServerBadge('Server Ready', true, false);
+      updateServerStatus('Server Ready', 'online');
     })
     .catch(() => {
-      updateServerBadge('Connecting to signaling server...', false, true);
+      updateServerStatus('Connecting to signaling server...', 'connecting');
     });
 })();
 
 socket.on('connect', () => {
   console.log('Connected to signaling server:', socket.id);
-  updateServerBadge('Server Ready', true, false);
+  updateServerStatus('Server Ready', 'online');
 });
 
 socket.on('disconnect', (reason) => {
   console.warn('Disconnected from signaling server:', reason);
-  updateServerBadge('Disconnected. Reconnecting...', false, true);
+  updateServerStatus('Disconnected. Reconnecting...', 'offline');
 });
 
 socket.on('connect_error', (error) => {
   console.warn('Signaling connection error:', error.message);
-  updateServerBadge('Waking up backend server... Please wait', false, true);
+  updateServerStatus('Waking up backend server... Please wait', 'connecting');
 });
 
 socket.on('reconnect_attempt', (attempt) => {
-  updateServerBadge(`Connecting... (Attempt ${attempt})`, false, true);
+  updateServerStatus(`Connecting... (Attempt ${attempt})`, 'connecting');
 });
 
 const ICE_SERVERS = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
