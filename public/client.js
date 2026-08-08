@@ -14,6 +14,7 @@ const ICE_SERVERS = {
     {
       urls: [
         'turn:openrelay.metered.ca:80',
+        'turn:openrelay.metered.ca:80?transport=udp',
         'turn:openrelay.metered.ca:443',
         'turn:openrelay.metered.ca:443?transport=tcp',
         'turns:openrelay.metered.ca:443?transport=tcp'
@@ -24,7 +25,7 @@ const ICE_SERVERS = {
   ]
 };
 
-const PEER_PREFIX = 'airwave-room-';
+const PEER_PREFIX = 'airwave-v2-';
 
 let peer = null;
 let activeMediaConn = null;
@@ -321,7 +322,7 @@ document.getElementById('btnCaptureAudio').addEventListener('click', async () =>
       }
     });
 
-    // Listen for guest data connections (reactions & handshakes)
+    // Listen for guest data connection (reactions)
     peer.on('connection', (dataConn) => {
       activeDataConn = dataConn;
       console.log('Guest connected data channel:', dataConn.peer);
@@ -331,49 +332,32 @@ document.getElementById('btnCaptureAudio').addEventListener('click', async () =>
           spawnEmoji(data.emoji);
         }
       });
-
-      // Call guest back with system audio stream
-      const mediaConn = peer.call(dataConn.peer, systemStream);
-      activeMediaConn = mediaConn;
-
-      mediaConn.on('stream', () => {
-        const pill = document.getElementById('hostStatus');
-        pill.textContent = 'Live';
-        pill.classList.add('live');
-        startStatsLoop(mediaConn);
-      });
-
-      if (mediaConn.peerConnection) {
-        mediaConn.peerConnection.onconnectionstatechange = () => {
-          const connected = mediaConn.peerConnection.connectionState === 'connected';
-          const pill = document.getElementById('hostStatus');
-          pill.textContent = connected ? 'Live' : 'Waiting for listener';
-          pill.classList.toggle('live', connected);
-          if (connected) startStatsLoop(mediaConn);
-        };
-      } else {
-        const pill = document.getElementById('hostStatus');
-        pill.textContent = 'Live';
-        pill.classList.add('live');
-        startStatsLoop(mediaConn);
-      }
-
-      mediaConn.on('close', () => {
-        const pill = document.getElementById('hostStatus');
-        pill.textContent = 'Waiting for listener';
-        pill.classList.remove('live');
-      });
     });
 
-    // Listen for direct incoming calls
+    // Listen for incoming media call from guest
     peer.on('call', (call) => {
+      console.log('Incoming call from guest:', call.peer);
       activeMediaConn = call;
       call.answer(systemStream);
-      
+
       const pill = document.getElementById('hostStatus');
       pill.textContent = 'Live';
       pill.classList.add('live');
       startStatsLoop(call);
+
+      if (call.peerConnection) {
+        call.peerConnection.onconnectionstatechange = () => {
+          const connected = call.peerConnection.connectionState === 'connected';
+          pill.textContent = connected ? 'Live' : 'Waiting for listener';
+          pill.classList.toggle('live', connected);
+          if (connected) startStatsLoop(call);
+        };
+      }
+
+      call.on('close', () => {
+        pill.textContent = 'Waiting for listener';
+        pill.classList.remove('live');
+      });
     });
 
   } catch (err) {
@@ -543,8 +527,8 @@ function joinRoomWithCode(code) {
       }
     });
 
-    // Call host or wait for host media call
-    const call = peer.call(targetPeerId, createDummyAudioStream());
+    // Call host (receive-only WebRTC call offer)
+    const call = peer.call(targetPeerId);
     activeMediaConn = call;
 
     call.on('stream', (remoteStream) => {
@@ -580,20 +564,6 @@ function joinRoomWithCode(code) {
     });
   });
 
-  peer.on('call', (call) => {
-    activeMediaConn = call;
-    call.answer();
-
-    call.on('stream', (remoteStream) => {
-      playRemoteAudio(remoteStream);
-
-      const pill = document.getElementById('guestStatus');
-      pill.textContent = 'Streaming live';
-      pill.classList.add('live');
-      startStatsLoop(call);
-    });
-  });
-
   peer.on('error', (err) => {
     console.error('Guest Peer Error:', err);
     if (err.type === 'peer-unavailable') {
@@ -603,21 +573,6 @@ function joinRoomWithCode(code) {
       document.getElementById('guestStatus').textContent = 'Connection error';
     }
   });
-}
-
-function createDummyAudioStream() {
-  try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const osc = ctx.createOscillator();
-    const dst = ctx.createMediaStreamDestination();
-    osc.connect(dst);
-    osc.start();
-    const track = dst.stream.getAudioTracks()[0];
-    track.enabled = false; // Muted dummy track
-    return dst.stream;
-  } catch (e) {
-    return null;
-  }
 }
 
 // ---------- Volume & Mute Controls ----------
