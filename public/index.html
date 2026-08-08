@@ -125,7 +125,12 @@
     </div>
 
     <p class="muted">Room <strong id="guestRoomLabel"></strong></p>
-    <audio id="remoteAudio" autoplay></audio>
+    <audio id="remoteAudio" autoplay playsinline></audio>
+
+    <!-- iOS / Mobile Autoplay Unmute Button -->
+    <button class="primary-btn hidden" id="btnUnmuteIos" style="background: var(--live); color: #0d1117; width: 100%; font-weight: 700; margin: 8px 0;">
+      🔊 Tap to Start Audio
+    </button>
 
     <!-- Volume & Audio Controls -->
     <div class="volume-card">

@@ -482,6 +482,36 @@ document.getElementById('btnJoin').addEventListener('click', () => {
   joinRoomWithCode(code);
 });
 
+function playRemoteAudio(remoteStream) {
+  const remoteAudio = document.getElementById('remoteAudio');
+  const btnUnmuteIos = document.getElementById('btnUnmuteIos');
+  if (!remoteAudio) return;
+
+  remoteAudio.srcObject = remoteStream;
+  initAudioVisualizer(remoteStream);
+
+  const attemptPlay = () => {
+    remoteAudio.play().then(() => {
+      if (btnUnmuteIos) btnUnmuteIos.classList.add('hidden');
+    }).catch((err) => {
+      console.warn('Autoplay blocked on iOS/Mobile Safari:', err);
+      if (btnUnmuteIos) {
+        btnUnmuteIos.classList.remove('hidden');
+        btnUnmuteIos.onclick = () => {
+          remoteAudio.play().then(() => {
+            btnUnmuteIos.classList.add('hidden');
+          }).catch(e => console.error(e));
+          if (audioCtx && audioCtx.state === 'suspended') {
+            audioCtx.resume();
+          }
+        };
+      }
+    });
+  };
+
+  attemptPlay();
+}
+
 function joinRoomWithCode(code) {
   role = 'guest';
   roomCode = code;
@@ -519,11 +549,7 @@ function joinRoomWithCode(code) {
 
     call.on('stream', (remoteStream) => {
       console.log('Receiving live audio stream from host');
-      const remoteAudio = document.getElementById('remoteAudio');
-      if (remoteAudio) {
-        remoteAudio.srcObject = remoteStream;
-      }
-      initAudioVisualizer(remoteStream);
+      playRemoteAudio(remoteStream);
 
       const pill = document.getElementById('guestStatus');
       pill.textContent = 'Streaming live';
@@ -533,11 +559,17 @@ function joinRoomWithCode(code) {
 
     if (call.peerConnection) {
       call.peerConnection.onconnectionstatechange = () => {
-        const connected = call.peerConnection.connectionState === 'connected';
+        const state = call.peerConnection.connectionState;
+        console.log('Guest peer connection state:', state);
         const pill = document.getElementById('guestStatus');
-        pill.textContent = connected ? 'Streaming live' : 'Connecting across networks...';
-        pill.classList.toggle('live', connected);
-        if (connected) startStatsLoop(call);
+        if (state === 'connected' || state === 'completed') {
+          pill.textContent = 'Streaming live';
+          pill.classList.add('live');
+          startStatsLoop(call);
+        } else if (state === 'failed') {
+          pill.textContent = 'Retrying connection...';
+          pill.classList.remove('live');
+        }
       };
     }
 
@@ -553,11 +585,7 @@ function joinRoomWithCode(code) {
     call.answer();
 
     call.on('stream', (remoteStream) => {
-      const remoteAudio = document.getElementById('remoteAudio');
-      if (remoteAudio) {
-        remoteAudio.srcObject = remoteStream;
-      }
-      initAudioVisualizer(remoteStream);
+      playRemoteAudio(remoteStream);
 
       const pill = document.getElementById('guestStatus');
       pill.textContent = 'Streaming live';
