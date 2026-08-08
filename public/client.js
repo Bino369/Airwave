@@ -419,6 +419,17 @@ document.getElementById('btnJoin').addEventListener('click', () => {
     document.getElementById('guestError').textContent = 'Enter a valid 5-character code.';
     return;
   }
+  
+  // iOS Safari Audio Unlock Trick
+  // Play the audio element immediately inside the click handler to unlock autoplay
+  const remoteAudio = document.getElementById('remoteAudio');
+  if (remoteAudio) {
+    remoteAudio.play().catch(e => {
+      // Ignore error, we just want to unlock the element for future streams
+      console.log("Audio unlock attempt:", e);
+    });
+  }
+
   joinRoomWithCode(code);
 });
 
@@ -476,8 +487,15 @@ function joinRoomWithCode(code) {
     console.log('HOST is calling us with audio stream!');
     activeMediaConn = call;
 
-    // Answer with no stream (receive-only)
-    call.answer();
+    // To keep 5G/Symmetric NATs from dropping the UDP connection due to inactivity,
+    // we must send SOME media data back. A 1-fps 1x1 blank canvas video stream does this
+    // perfectly without requiring mic permissions or triggering Safari WebAudio bugs!
+    const dummyCanvas = document.createElement('canvas');
+    dummyCanvas.width = 1;
+    dummyCanvas.height = 1;
+    const dummyStream = dummyCanvas.captureStream(1); // 1 frame per second
+
+    call.answer(dummyStream);
 
     call.on('stream', (remoteStream) => {
       console.log('Got remote audio stream!');
