@@ -48,24 +48,7 @@ let statsInterval = null;
 let lastBytesReceived = 0;
 let lastTimestamp = 0;
 
-// ---------- Silent Audio Stream (required for WebRTC SDP negotiation on guest side) ----------
-// When the guest answers a call with no stream, WebRTC cannot negotiate audio codec → no sound.
-// We answer with a silent (0-gain) oscillator stream so SDP answer includes a valid audio line.
-function createSilentAudioStream() {
-  try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const oscillator = ctx.createOscillator();
-    const gain = ctx.createGain();
-    gain.gain.value = 0; // completely silent
-    oscillator.connect(gain);
-    const dest = gain.connect(ctx.createMediaStreamDestination());
-    oscillator.start();
-    return dest.stream;
-  } catch (e) {
-    console.warn('createSilentAudioStream failed:', e);
-    return new MediaStream(); // fallback empty stream
-  }
-}
+// Removed createSilentAudioStream as it creates AudioContext without user gesture on iOS, muting the stream.
 
 // ---------- Views ----------
 const views = {
@@ -229,7 +212,14 @@ function playRemoteAudio(remoteStream) {
   const btnUnmuteIos = document.getElementById('btnUnmuteIos');
   if (!remoteAudio) return;
   remoteAudio.srcObject = remoteStream;
-  initAudioVisualizer(remoteStream);
+  
+  // CRITICAL: Do NOT initialize AudioContext (visualizer) on iOS without a user gesture,
+  // otherwise WebKit permanently mutes the entire WebRTC remote stream.
+  // We only run visualizer for the Host right now.
+  if (role === 'host') {
+    initAudioVisualizer(remoteStream);
+  }
+
   remoteAudio.play().then(() => {
     if (btnUnmuteIos) btnUnmuteIos.classList.add('hidden');
   }).catch(() => {
@@ -237,7 +227,6 @@ function playRemoteAudio(remoteStream) {
       btnUnmuteIos.classList.remove('hidden');
       btnUnmuteIos.onclick = () => {
         remoteAudio.play().catch(e => console.error(e));
-        if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
         btnUnmuteIos.classList.add('hidden');
       };
     }
@@ -482,15 +471,13 @@ function joinRoomWithCode(code) {
     });
   });
 
-  // Step 2: Host will call us back — MUST answer with a silent stream for proper SDP negotiation
+  // Step 2: Host will call us back — answer and receive stream
   peer.on('call', (call) => {
     console.log('HOST is calling us with audio stream!');
     activeMediaConn = call;
 
-    // Create a silent audio stream so the SDP answer includes a proper audio codec.
-    // Without this, WebRTC cannot negotiate the audio track and no sound arrives.
-    const silentStream = createSilentAudioStream();
-    call.answer(silentStream);
+    // Answer with no stream (receive-only)
+    call.answer();
 
     call.on('stream', (remoteStream) => {
       console.log('Got remote audio stream!');
